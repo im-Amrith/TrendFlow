@@ -1,6 +1,8 @@
 import { BlogPost, PostStatus } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+console.log("Configured API_URL:", API_URL); // Debugging log
+
 
 const getHeaders = () => {
   const token = localStorage.getItem('auth_token');
