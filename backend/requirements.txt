@@ -6,3 +6,6 @@ langgraph
 langchain-google-genai
 langchain-core
 pydantic
+httpx
+requests
+gnews
