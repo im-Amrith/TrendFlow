@@ -1,21 +1,26 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getAuth, GoogleAuthProvider } from "firebase/auth";
 
+// Firebase web config comes from env vars (.env.local locally, Vercel project settings in production).
+// These values ship in the browser bundle by design; access is protected by Firebase Auth,
+// Firestore security rules and the API key's restrictions in Google Cloud Console.
 const firebaseConfig = {
-  apiKey: "AIzaSyDFRvXLb2FVYym1ixfPEr-5ooej0C_-CUo",
-  authDomain: "trendflow-761ac.firebaseapp.com",
-  projectId: "trendflow-761ac",
-  storageBucket: "trendflow-761ac.firebasestorage.app",
-  messagingSenderId: "370492409354",
-  appId: "1:370492409354:web:13b86b4d1c2312398501f3",
-  measurementId: "G-J29RMLMRB8"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
 };
+
+if (!firebaseConfig.apiKey) {
+  console.error("Missing VITE_FIREBASE_* env vars - Firebase sign-in will not work.");
+}
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 
 // Initialize Firebase services
 export const auth = getAuth(app);
-export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();

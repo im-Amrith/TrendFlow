@@ -10,6 +10,7 @@ pydantic
 httpx
 requests
 gnews
+arxiv
 duckduckgo-search
 newsapi-python
 feedparser

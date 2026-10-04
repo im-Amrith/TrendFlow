@@ -20,9 +20,11 @@ load_dotenv(os.path.join(BACKEND_DIR, ".env.local"))
 try:
     from backend.agents import app_graph
     from backend.news_fetcher import fetch_structured_news
+    from backend.devto import publish_article, post_content
 except ImportError:
     from agents import app_graph
     from news_fetcher import fetch_structured_news
+    from devto import publish_article, post_content
 
 # Initialize FastAPI
 app = FastAPI(title="TrendFlow Backend")
@@ -302,55 +304,46 @@ async def publish_post_to_devto(post_id: str, user_id: str = Depends(get_current
         
         post = post_doc.to_dict()
 
-        # 2. Prepare Payload for Dev.to
-        tags = post.get("seo_keywords", [])
-        if not isinstance(tags, list):
-            tags = []
-            
-        # Clean tags: remove #, spaces, and non-alphanumeric chars (Dev.to is strict)
-        clean_tags = []
-        for t in tags:
-            # Remove # and spaces
-            cleaned = t.lower().replace("#", "").replace(" ", "")
-            # Keep only alphanumeric
-            cleaned = "".join(c for c in cleaned if c.isalnum())
-            if cleaned:
-                clean_tags.append(cleaned)
-        
-        clean_tags = clean_tags[:3] # Limit to 3 to leave room for 'ai'
-        if "ai" not in clean_tags: clean_tags.append("ai")
+        # 2. Send to Dev.to (uses the edited title/content if the user changed them)
+        title, body = post_content(post)
+        try:
+            url = publish_article(devto_key, title, body, post.get("seo_keywords", []), published=True)
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e))
 
-        article_payload = {
-            "article": {
-                "title": post.get("title_viral") or post.get("topic", "TrendFlow AI Digest"),
-                "body_markdown": post.get("draft_content") or "No content generated.",
-                "published": True, # Publish immediately
-                "tags": clean_tags,
-                "series": "TrendFlow AI Digest"
-            }
-        }
-
-        # 3. Send to Dev.to
-        headers = {
-            "api-key": devto_key,
-            "Content-Type": "application/json"
-        }
-        
-        print(f"Sending payload to Dev.to: {article_payload}")
-        devto_res = requests.post("https://dev.to/api/articles", json=article_payload, headers=headers)
-        
-        if devto_res.status_code == 201:
-            # 4. Update local status
-            post_ref.update({"status": "published"})
-            return {"status": "success", "url": devto_res.json()['url']}
-        else:
-            print(f"❌ Dev.to Error ({devto_res.status_code}): {devto_res.text}")
-            raise HTTPException(status_code=500, detail=f"Dev.to Error: {devto_res.text}")
+        # 3. Update local status
+        post_ref.update({"status": "published", "devto_url": url})
+        return {"status": "success", "url": url}
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def build_post_data(topic: str, final_state: dict, user_id: str, status: str = "needs_review") -> dict:
+    """Maps the agent graph's final state to a Firestore drafts document."""
+    metadata = final_state.get("final_metadata", {})
+    return {
+        "user_id": user_id,
+        "topic": topic,
+        "title": metadata.get("title_viral", f"Deep Dive: {topic}"),
+        "title_viral": metadata.get("title_viral", f"Deep Dive: {topic}"),
+        "draft_content": final_state.get("draft", ""),
+        "content_markdown": final_state.get("draft", ""),
+        "status": status,
+        "viral_score": 85,
+        "sentiment": "Neutral",
+        "target_audience": "General Tech",
+        "reading_time_min": metadata.get("reading_time", 5),
+        "seo_keywords": metadata.get("tags", []),
+        "tags": metadata.get("tags", []),
+        "meta_description": metadata.get("meta_description", ""),
+        "critique_notes": final_state.get("critique", "No critique generated"),
+        "image_prompt": metadata.get("image_prompt_midjourney", ""),
+        "is_approved": False,
+        "revision_count": 0,
+        "created_at": firestore.SERVER_TIMESTAMP
+    }
 
 @app.post("/generate-pro-blog")
 async def generate_pro_blog(request: BlogRequest, user_id: str = Depends(get_current_user)):
@@ -364,34 +357,11 @@ async def generate_pro_blog(request: BlogRequest, user_id: str = Depends(get_cur
             "is_approved": False
         }
         
-        # Run the Graph
-        final_state = app_graph.invoke(initial_state)
-        
-        # Extract metadata safely
-        metadata = final_state.get("final_metadata", {})
+        # Run the Graph in a worker thread so it doesn't block other requests for minutes
+        final_state = await asyncio.to_thread(app_graph.invoke, initial_state)
         
         # Prepare data for Firestore drafts collection
-        post_data = {
-            "user_id": user_id,
-            "topic": request.topic,
-            "title": metadata.get("title_viral", f"Deep Dive: {request.topic}"),
-            "title_viral": metadata.get("title_viral", f"Deep Dive: {request.topic}"),
-            "draft_content": final_state.get("draft", ""),
-            "content_markdown": final_state.get("draft", ""),
-            "status": "needs_review",
-            "viral_score": 85,
-            "sentiment": "Neutral",
-            "target_audience": "General Tech",
-            "reading_time_min": metadata.get("reading_time", 5),
-            "seo_keywords": metadata.get("tags", []),
-            "tags": metadata.get("tags", []),
-            "meta_description": metadata.get("meta_description", ""),
-            "critique_notes": final_state.get("critique", "No critique generated"),
-            "image_prompt": metadata.get("image_prompt_midjourney", ""),
-            "is_approved": False,
-            "revision_count": 0,
-            "created_at": firestore.SERVER_TIMESTAMP
-        }
+        post_data = build_post_data(request.topic, final_state, user_id)
         
         # Insert into Firestore
         if db:

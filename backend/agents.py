@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from duckduckgo_search import DDGS
 from newsapi import NewsApiClient
 import requests
+import arxiv
 from gnews import GNews
 
 
@@ -293,6 +294,67 @@ def fetch_tech_news(topic: str) -> str:
     return result_text
 
 
+# --- TOOL: RESEARCH & DEV-COMMUNITY SOURCES (free, no API keys) ---
+def fetch_research_sources(query: str) -> str:
+    """
+    Covers brand-new tech (models, architectures, tools) that mainstream news hasn't picked up yet.
+    Takes a plain-text query, not the boolean news query.
+    """
+    print(f"--- 🔬 Research Sources: Hunting for '{query}' (arXiv, HF Papers, Hacker News) ---")
+    aggregated_data = []
+
+    # SOURCE A: arXiv (pre-prints)
+    try:
+        client = arxiv.Client(page_size=5, num_retries=2, delay_seconds=3)
+        search = arxiv.Search(query=query, max_results=3, sort_by=arxiv.SortCriterion.Relevance)
+        results = list(client.results(search))
+        print(f"      ✅ arXiv found {len(results)} papers")
+        for r in results:
+            summary = " ".join(r.summary.split())[:500]
+            aggregated_data.append(f"[arXiv - {r.published:%Y-%m-%d}] {r.title} ({r.entry_id}): {summary}")
+    except Exception as e:
+        print(f"   ⚠️ arXiv failed: {e}")
+
+    # SOURCE B: Hugging Face Papers (community-curated AI papers)
+    try:
+        response = requests.get("https://huggingface.co/api/papers/search", params={"q": query}, timeout=15)
+        if response.status_code == 200:
+            papers = response.json()[:3]
+            print(f"      ✅ HF Papers found {len(papers)} papers")
+            for p in papers:
+                paper = p.get("paper", {})
+                summary = " ".join((paper.get("summary") or "").split())[:500]
+                aggregated_data.append(
+                    f"[HF Papers - {paper.get('publishedAt', '')[:10]}, {paper.get('upvotes', 0)} upvotes] "
+                    f"{paper.get('title')} (https://huggingface.co/papers/{paper.get('id')}): {summary}"
+                )
+        else:
+            print(f"   ⚠️ HF Papers Error: {response.status_code}")
+    except Exception as e:
+        print(f"   ⚠️ HF Papers failed: {e}")
+
+    # SOURCE C: Hacker News via Algolia (developer discussion, last 90 days)
+    try:
+        since = int(time.time()) - 90 * 24 * 3600
+        response = requests.get(
+            "https://hn.algolia.com/api/v1/search",
+            params={"query": query, "tags": "story", "numericFilters": f"created_at_i>{since}", "hitsPerPage": 5},
+            timeout=15,
+        )
+        if response.status_code == 200:
+            hits = [h for h in response.json().get("hits", []) if h.get("title")][:3]
+            print(f"      ✅ Hacker News found {len(hits)} stories")
+            for h in hits:
+                link = h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}"
+                aggregated_data.append(f"[Hacker News - {h['created_at'][:10]}, {h.get('points', 0)} points] {h['title']}: {link}")
+        else:
+            print(f"   ⚠️ Hacker News Error: {response.status_code}")
+    except Exception as e:
+        print(f"   ⚠️ Hacker News failed: {e}")
+
+    return "\n\n".join(aggregated_data)
+
+
 # --- NODE 1: RESEARCHER (Optimized for APIs) ---
 class SearchQueries(BaseModel):
     # We explicitly ask for "Keywords" now, not a "Query"
@@ -328,6 +390,14 @@ def researcher_node(state):
         print("   ⚠️ Specific search failed, reverting to broad topic...")
         raw_data = fetch_tech_news(topic)
 
+    # Papers & dev discussion catch brand-new tech the news APIs miss. Use the plain topic, not the boolean query.
+    research_data = fetch_research_sources(topic)
+    if "CRITICAL" in raw_data and research_data:
+        raw_data = research_data
+    else:
+        # Budget each part so research isn't truncated away by a long news section
+        raw_data = f"{raw_data[:5000]}\n\n{research_data[:3500]}"
+
     # STEP 3: Synthesize
     summary_prompt = f"""
     You are a Lead Tech Analyst. Synthesize this data.
@@ -336,7 +406,7 @@ def researcher_node(state):
     ANGLES: {angles}
     
     RAW DATA:
-    {raw_data[:8000]}
+    {raw_data[:9000]}
     """
     summary = ask_llm(summary_prompt, creative=True, max_tokens=1500)
     
