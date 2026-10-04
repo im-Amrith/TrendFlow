@@ -25,3 +25,8 @@ __pycache__
 *.njsproj
 *.sln
 *.sw?
+
+hf_deploy/
+
+# Firebase service-account key (never commit)
+firebase-key.json

@@ -4,11 +4,8 @@ import { api } from '../services/api';
 
 export const SettingsPage: React.FC = () => {
   const [apiKeyDevTo, setApiKeyDevTo] = useState('');
-  const [apiKeyHashnode, setApiKeyHashnode] = useState('');
-  const [hashnodePubId, setHashnodePubId] = useState('');
   
   const [devtoConfigured, setDevtoConfigured] = useState(false);
-  const [hashnodeConfigured, setHashnodeConfigured] = useState(false);
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -26,12 +23,9 @@ export const SettingsPage: React.FC = () => {
       setLoading(true);
       const settings = await api.getSettings();
       setDevtoConfigured(settings.devto_configured);
-      setHashnodeConfigured(settings.hashnode_configured);
       
       // Pre-fill if available (or leave empty if masked/not returned)
       if (settings.devto_api_key) setApiKeyDevTo(settings.devto_api_key);
-      if (settings.hashnode_token) setApiKeyHashnode(settings.hashnode_token);
-      if (settings.hashnode_pub_id) setHashnodePubId(settings.hashnode_pub_id);
       
     } catch (err) {
       console.error("Failed to load settings", err);
@@ -49,23 +43,6 @@ export const SettingsPage: React.FC = () => {
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
       setMessage({ type: 'error', text: 'Failed to save Dev.to settings' });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSaveHashnode = async () => {
-    try {
-      setSaving(true);
-      await api.updateSettings({ 
-        hashnode_token: apiKeyHashnode,
-        hashnode_pub_id: hashnodePubId
-      });
-      setHashnodeConfigured(true);
-      setMessage({ type: 'success', text: 'Hashnode settings saved!' });
-      setTimeout(() => setMessage(null), 3000);
-    } catch (err) {
-      setMessage({ type: 'error', text: 'Failed to save Hashnode settings' });
     } finally {
       setSaving(false);
     }
@@ -131,46 +108,6 @@ export const SettingsPage: React.FC = () => {
                         <p className="text-xs text-gray-500">Used for publishing articles and fetching analytics.</p>
                     </div>
 
-                    <div className="h-px bg-gray-800/50"></div>
-
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium text-gray-300 flex items-center justify-between">
-                            <span className="flex items-center gap-2"><img src="https://hashnode.com/favicon.ico" className="w-4 h-4 rounded" /> Hashnode Configuration</span>
-                            {hashnodeConfigured ? (
-                                <span className="text-xs text-green-400 flex items-center gap-1"><CheckCircle size={12} /> Connected</span>
-                            ) : (
-                                <span className="text-xs text-gray-500 flex items-center gap-1"><AlertCircle size={12} /> Not Configured</span>
-                            )}
-                        </label>
-                        <div className="grid gap-3">
-                            <div className="flex gap-3">
-                                <input 
-                                    type="password" 
-                                    value={apiKeyHashnode}
-                                    onChange={(e) => setApiKeyHashnode(e.target.value)}
-                                    placeholder={hashnodeConfigured ? "Access Token (••••••••)" : "Enter Access Token"}
-                                    className="flex-1 bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all"
-                                />
-                            </div>
-                            <div className="flex gap-3">
-                                <input 
-                                    type="text" 
-                                    value={hashnodePubId}
-                                    onChange={(e) => setHashnodePubId(e.target.value)}
-                                    placeholder={hashnodeConfigured ? "Publication ID (••••••••)" : "Enter Publication ID"}
-                                    className="flex-1 bg-black/50 border border-gray-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all"
-                                />
-                                <button 
-                                    onClick={handleSaveHashnode}
-                                    disabled={saving}
-                                    className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
-                                >
-                                    {saving ? <Loader2 className="animate-spin" size={18} /> : 'Update'}
-                                </button>
-                            </div>
-                        </div>
-                        <p className="text-xs text-gray-500">Required for GraphQL API access and publishing.</p>
-                    </div>
                 </div>
             </div>
         </div>

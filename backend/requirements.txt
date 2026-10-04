@@ -3,9 +3,14 @@ uvicorn
 supabase
 python-dotenv
 langgraph
-langchain-google-genai
+firebase-admin
+langchain-groq
 langchain-core
 pydantic
 httpx
 requests
 gnews
+duckduckgo-search
+newsapi-python
+feedparser
+python-jose[cryptography]

@@ -61,17 +61,11 @@ const AppContent: React.FC = () => {
     setEditingPost(null);
   };
 
-  const handleApprove = async (id: string, platform: 'devto' | 'hashnode') => {
+  const handleApprove = async (id: string, platform: 'devto') => {
     try {
-      let result;
-      if (platform === 'devto') {
-          result = await api.publishToDevTo(id);
-          alert(`Post published to Dev.to! View it here: ${result.url}`);
-      } else {
-          result = await api.publishToHashnode(id);
-          alert(`Post published to Hashnode! View it here: ${result.url}`);
-      }
-      
+      const result = await api.publishToDevTo(id);
+      alert(`Post published to Dev.to! View it here: ${result.url}`);
+
       // 2. Update Local State
       setPosts(prev => prev.map(p => p.id === id ? { ...p, status: 'published' } : p));
       

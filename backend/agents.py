@@ -1,8 +1,12 @@
 import os
+import time
+from datetime import date
+import threading
+from collections import deque
 import feedparser
 from typing import TypedDict, List, Annotated
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -15,8 +19,87 @@ from gnews import GNews
 load_dotenv()
 
 # --- CONFIGURATION ---
-llm_fast = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5)
-llm_creative = ChatGoogleGenerativeAI(model="gemini-2.5-pro", temperature=0.8)
+# Groq free tier. Limits are per model, so splitting work across two models doubles our token budget.
+FAST_MODEL = os.getenv("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
+CREATIVE_MODEL = os.getenv("GROQ_CREATIVE_MODEL", "openai/gpt-oss-120b")
+GROQ_TPM_LIMIT = int(os.getenv("GROQ_TPM_LIMIT", "8000"))  # tokens per minute, per model
+GROQ_RPM_LIMIT = int(os.getenv("GROQ_RPM_LIMIT", "30"))    # requests per minute, per model
+
+class RateLimitGuard:
+    """Sliding 60s window of tokens/requests for one model. Blocks until a call fits under the limits."""
+    def __init__(self, tpm: int, rpm: int):
+        self.tpm = int(tpm * 0.9)  # keep 10% headroom for estimation error
+        self.rpm = rpm
+        self.events = deque()  # [timestamp, tokens]
+        self.lock = threading.Lock()
+
+    def acquire(self, tokens: int):
+        tokens = min(tokens, self.tpm)
+        while True:
+            with self.lock:
+                now = time.time()
+                while self.events and now - self.events[0][0] > 60:
+                    self.events.popleft()
+                used = sum(t for _, t in self.events)
+                if used + tokens <= self.tpm and len(self.events) < self.rpm:
+                    event = [now, tokens]
+                    self.events.append(event)
+                    return event
+                wait = 60 - (now - self.events[0][0]) + 0.5
+            print(f"   ⏳ Rate-limit guard: waiting {wait:.0f}s for Groq token budget...")
+            time.sleep(wait)
+
+    def settle(self, event, actual_tokens: int):
+        # Replace the up-front estimate with the real usage reported by Groq
+        with self.lock:
+            event[1] = actual_tokens
+
+rate_guards = {
+    FAST_MODEL: RateLimitGuard(GROQ_TPM_LIMIT, GROQ_RPM_LIMIT),
+    CREATIVE_MODEL: RateLimitGuard(GROQ_TPM_LIMIT, GROQ_RPM_LIMIT),
+}
+
+def ask_llm(prompt: str, creative: bool = False, max_tokens: int = 1024, schema=None):
+    """Calls Groq with rate-limit protection. Returns text, or a parsed `schema` instance if given."""
+    model = CREATIVE_MODEL if creative else FAST_MODEL
+    llm = ChatGroq(
+        model=model,
+        temperature=0.8 if creative else 0.5,
+        max_tokens=max_tokens,
+        reasoning_effort="low",  # reasoning tokens count against the TPM budget
+        max_retries=4,           # groq client backs off on 429 using retry-after
+    )
+    # Groq reserves prompt + max_tokens against the TPM limit, so estimate the same way (~3.5 chars/token)
+    event = rate_guards[model].acquire(int(len(prompt) / 3.5) + max_tokens)
+
+    messages = [HumanMessage(content=prompt)]
+    if schema:
+        # Strict json_schema makes Groq constrain decoding to the schema (tool calling can drop fields).
+        # langchain-groq doesn't send `strict`, so we build the response_format ourselves.
+        json_schema = schema.model_json_schema()
+        json_schema["additionalProperties"] = False
+        structured = llm.bind(response_format={
+            "type": "json_schema",
+            "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": True},
+        })
+        for attempt in range(2):
+            try:
+                raw = structured.invoke(messages)
+                output = schema.model_validate_json(raw.content)
+                break
+            except Exception as e:
+                error = e
+                print(f"   ⚠️ Structured output attempt {attempt + 1} failed: {str(e)[:150]}")
+        else:
+            raise ValueError(f"Structured output failed: {error}")
+    else:
+        raw = llm.invoke(messages)
+        output = raw.content
+
+    usage = getattr(raw, "usage_metadata", None)
+    if usage:
+        rate_guards[model].settle(event, usage.get("total_tokens", event[1]))
+    return output
 
 # Define the State
 class AgentState(TypedDict):
@@ -221,18 +304,15 @@ def researcher_node(state):
     print(f"--- Researcher: Generating Targeted Search for '{topic}' ---")
 
     # STEP 1: Generate a Keyword-Based Query
-    query_generator = llm_fast.with_structured_output(SearchQueries)
-    q_result = query_generator.invoke([
-        HumanMessage(content=f"""
-        We are covering '{topic}'. 
+    q_result = ask_llm(f"""
+        Today is {date.today():%B %d, %Y}. We are covering '{topic}'.
         Generate ONE highly effective KEYWORD search string to find breaking news.
-        
+
         CRITICAL RULES:
         1. Output strictly keywords (e.g. "Stripe IPO valuation", NOT "What is Stripe's IPO valuation?").
         2. Use logical operators if needed (e.g. "Nvidia AND (AMD OR Intel)").
         3. Target a specific, recent event.
-        """)
-    ])
+        """, max_tokens=600, schema=SearchQueries)
     
     # We use the keywords for the search
     specific_query = q_result.search_keywords
@@ -256,9 +336,9 @@ def researcher_node(state):
     ANGLES: {angles}
     
     RAW DATA:
-    {raw_data}
+    {raw_data[:8000]}
     """
-    summary = llm_creative.invoke([HumanMessage(content=summary_prompt)]).content
+    summary = ask_llm(summary_prompt, creative=True, max_tokens=1500)
     
     return {"research_summary": summary, "search_queries": angles, "topic": specific_query}
 
@@ -305,10 +385,10 @@ def writer_node(state: AgentState):
     Write the full article now.
     """
     
-    # Use the Creative Model (Gemini 1.5 Pro)
-    response = llm_creative.invoke([HumanMessage(content=prompt)])
-    
-    return {"draft": response.content, "revision_count": 0}
+    # Use the Creative Model
+    draft = ask_llm(prompt, creative=True, max_tokens=3500)
+
+    return {"draft": draft, "revision_count": 0}
 
 # --- NODE 3: EDITOR (The Ruthless Gatekeeper) ---
 class EditorOutput(BaseModel):
@@ -354,9 +434,8 @@ def editor_node(state: AgentState):
     {draft}
     """
     
-    # Use Flash (Fast logic)
-    structured_llm = llm_fast.with_structured_output(EditorOutput)
-    result = structured_llm.invoke([HumanMessage(content=prompt)])
+    # Use the Fast Model
+    result = ask_llm(prompt, max_tokens=1200, schema=EditorOutput)
     
     # Override approval if banned words exist (Hard Logic)
     if found_banned and result.score > 80:
@@ -380,7 +459,7 @@ def refiner_node(state: AgentState):
     draft = state["draft"]
     critique = state["critique"]
     
-    # We use Pro because rewriting requires high nuance to not lose the 'voice'
+    # We use the Creative Model because rewriting requires high nuance to not lose the 'voice'
     # We explicitly tell it to PRESERVE the good parts.
     prompt = f"""
     You are a Senior Editor. Your job is to fix specific issues in the draft without ruining the voice.
@@ -401,10 +480,10 @@ def refiner_node(state: AgentState):
     Return the FULL, polished final version of the blog post.
     """
     
-    response = llm_creative.invoke([HumanMessage(content=prompt)])
-    
+    refined = ask_llm(prompt, creative=True, max_tokens=3500)
+
     return {
-        "draft": response.content, 
+        "draft": refined,
         "revision_count": state["revision_count"] + 1,
         # We clear the critique so the next loop (if any) starts fresh
         "critique": "" 
@@ -448,82 +527,35 @@ def seo_node(state: AgentState):
     3. **Visuals:** Describe a header image that is abstract and modern (Cyberpunk/Minimalist/Tech). NO TEXT in the image description.
     """
     
-    # Use Flash for this. It's great at following strict schemas.
-    structured_llm = llm_fast.with_structured_output(DistributionPackage)
-    result = structured_llm.invoke([HumanMessage(content=prompt)])
+    # Use the Fast Model for this. It's great at following strict schemas.
+    result = ask_llm(prompt, max_tokens=1500, schema=DistributionPackage)
     
     print(f"   [SEO] Viral Title: {result.title_viral}")
     
-    # We save this as a dictionary to store in Supabase JSON column later
+    # We save this as a dictionary to store in Firestore later
     return {
-        "final_metadata": result.dict()
+        "final_metadata": result.model_dump()
     }
-
-# --- NODE 6: PUBLISHER (Dev.to) ---
-def publish_to_devto(state: AgentState):
-    """
-    Publishes the approved draft to Dev.to using their API.
-    """
-    print("--- Publisher: Uploading to Dev.to ---")
-    
-    if not os.getenv("DEVTO_API_KEY"):
-        print("   ⚠️ DEVTO_API_KEY not found. Skipping publication.")
-        return {"publish_status": "skipped"}
-
-    # 1. Prepare Payload
-    # Dev.to requires a specific format. We add the 'ai-generated' tag for safety.
-    # We use the 'title_viral' from SEO node, or fallback to topic
-    title = state.get("final_metadata", {}).get("title_viral", f"Deep Dive: {state['topic']}")
-    tags = state.get("final_metadata", {}).get("tags", [])
-    
-    # Ensure tags are lowercase and alphanumeric (Dev.to requirement)
-    clean_tags = [t.lower().replace(" ", "") for t in tags]
-    clean_tags = clean_tags[:4] # Dev.to allows max 4 tags
-    if "ai" not in clean_tags: clean_tags.append("ai")
-    
-    article_payload = {
-        "article": {
-            "title": title,
-            "body_markdown": state["draft"],
-            "published": False, # Set to True to auto-publish, False for Draft
-            "tags": clean_tags,
-            "series": "TrendFlow AI Digest"
-        }
-    }
-    
-    # 2. Send Request
-    headers = {
-        "api-key": os.getenv("DEVTO_API_KEY"),
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        response = requests.post("https://dev.to/api/articles", json=article_payload, headers=headers)
-        
-        if response.status_code == 201:
-            print(f"   ✅ Published to Dev.to! URL: {response.json()['url']}")
-            return {"publish_status": "success", "publish_url": response.json()['url']}
-        else:
-            print(f"   ❌ Failed to publish: {response.text}")
-            return {"publish_status": "failed"}
-    except Exception as e:
-        print(f"   ❌ Publisher Exception: {e}")
-        return {"publish_status": "error"}
 
 # --- UPDATED STATE DEFINITION ---
-# This matches the data output by your new advanced nodes
+# This matches the data output by your new advanced nodes and maps to the Firestore drafts collection
 class AgentState(TypedDict):
     topic: str
     search_queries: List[str]   # Added for Researcher
     research_summary: str
-    draft: str
-    critique: str
+    draft: str                  # Maps to draft_content / content_markdown
+    critique: str               # Maps to critique_notes
     revision_count: int
     is_approved: bool
     score: int                  # Added for Editor
+    viral_score: int            # For drafts
+    sentiment: str              # For drafts
+    target_audience: str        # For drafts
+    reading_time_min: int       # For drafts
+    seo_keywords: List[str]     # For drafts
+    meta_description: str       # For drafts
+    image_prompt: str           # For drafts
     final_metadata: dict        # Added for SEO
-    publish_status: str         # Added for Publisher
-    publish_url: str            # Added for Publisher
 
 # --- LOGIC FLOW ---
 def check_approval(state: AgentState):
@@ -552,7 +584,6 @@ workflow.add_node("writer", writer_node)
 workflow.add_node("editor", editor_node)
 workflow.add_node("refiner", refiner_node)
 workflow.add_node("seo", seo_node)
-workflow.add_node("publisher", publish_to_devto)
 
 # 2. Set Entry Point
 workflow.set_entry_point("researcher")
@@ -575,8 +606,7 @@ workflow.add_conditional_edges(
 workflow.add_edge("refiner", "editor") # After refining, send back to Editor for re-check
 
 # 6. End
-workflow.add_edge("seo", "publisher")
-workflow.add_edge("publisher", END)
+workflow.add_edge("seo", END)
 
 # 7. Compile
 app_graph = workflow.compile()

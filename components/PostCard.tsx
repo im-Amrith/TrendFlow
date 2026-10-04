@@ -5,7 +5,7 @@ import { Edit2, CheckCircle, TrendingUp, Eye, Clock, Activity, XCircle } from 'l
 interface PostCardProps {
   post: BlogPost;
   onEdit: (post: BlogPost) => void;
-  onApprove: (id: string, platform: 'devto' | 'hashnode') => void;
+  onApprove: (id: string, platform: 'devto') => void;
   onReject: (id: string) => void;
 }
 
@@ -106,13 +106,6 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onEdit, onApprove, onR
                 title="Publish to Dev.to"
             >
                 <CheckCircle size={14} /> Dev.to
-            </button>
-            <button 
-                onClick={() => onApprove(post.id, 'hashnode')}
-                className="flex-1 flex items-center justify-center gap-1 py-2 px-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 border border-transparent text-xs font-bold transition-all"
-                title="Publish to Hashnode"
-            >
-                <CheckCircle size={14} /> Hashnode
             </button>
           </div>
         </div>

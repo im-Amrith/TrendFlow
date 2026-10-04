@@ -1,65 +1,75 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { jwtDecode } from 'jwt-decode';
+import { auth, googleProvider } from '../lib/firebase';
+import { onAuthStateChanged, signInWithPopup, signOut, User as FirebaseUser } from 'firebase/auth';
 
 interface User {
   id: string;
-  email: string;
-  name: string;
-  picture: string;
+  email: string | null;
+  name: string | null;
+  picture: string | null;
 }
 
 interface AuthContextType {
   user: User | null;
+  firebaseUser: FirebaseUser | null;
   token: string | null;
-  login: (token: string, user: User) => void;
-  logout: () => void;
+  login: () => Promise<void>;
+  logout: () => Promise<void>;
   isAuthenticated: boolean;
+  loading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    // Check local storage on mount
-    const storedToken = localStorage.getItem('auth_token');
-    const storedUser = localStorage.getItem('auth_user');
-
-    if (storedToken && storedUser) {
-      try {
-        const decoded: any = jwtDecode(storedToken);
-        // Check expiration
-        if (decoded.exp * 1000 > Date.now()) {
-          setToken(storedToken);
-          setUser(JSON.parse(storedUser));
-        } else {
-          logout();
-        }
-      } catch (e) {
-        logout();
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setFirebaseUser(currentUser);
+      if (currentUser) {
+        const idToken = await currentUser.getIdToken();
+        setToken(idToken);
+        setUser({
+          id: currentUser.uid,
+          email: currentUser.email,
+          name: currentUser.displayName,
+          picture: currentUser.photoURL,
+        });
+      } else {
+        setToken(null);
+        setUser(null);
       }
-    }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const login = (newToken: string, newUser: User) => {
-    setToken(newToken);
-    setUser(newUser);
-    localStorage.setItem('auth_token', newToken);
-    localStorage.setItem('auth_user', JSON.stringify(newUser));
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+      // The onAuthStateChanged listener will handle the rest
+    } catch (error) {
+      console.error("Firebase Login Error:", error);
+      throw error;
+    }
   };
 
-  const logout = () => {
-    setToken(null);
-    setUser(null);
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_user');
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Firebase Logout Error:", error);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, isAuthenticated: !!user }}>
-      {children}
+    <AuthContext.Provider value={{ user, firebaseUser, token, login, logout, isAuthenticated: !!user, loading }}>
+      {!loading && children}
     </AuthContext.Provider>
   );
 };

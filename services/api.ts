@@ -1,11 +1,15 @@
 import { BlogPost, PostStatus } from '../types';
+import { auth } from '../lib/firebase';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 console.log("Configured API_URL:", API_URL); // Debugging log
 
-
-const getHeaders = () => {
-  const token = localStorage.getItem('auth_token');
+const getHeaders = async () => {
+  // Try to get token from current user
+  let token = null;
+  if (auth.currentUser) {
+    token = await auth.currentUser.getIdToken();
+  }
   return {
     'Content-Type': 'application/json',
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
@@ -63,7 +67,7 @@ export interface NewsItem {
 export const api = {
   getNews: async (topic: string = "Technology", limit: number = 5): Promise<NewsItem[]> => {
     const response = await fetch(`${API_URL}/news?topic=${encodeURIComponent(topic)}&limit=${limit}`, {
-      headers: getHeaders()
+      headers: await getHeaders()
     });
     if (!response.ok) throw new Error('Failed to fetch news');
     return await response.json();
@@ -71,7 +75,7 @@ export const api = {
 
   getPosts: async (): Promise<BlogPost[]> => {
     const response = await fetch(`${API_URL}/posts`, {
-      headers: getHeaders()
+      headers: await getHeaders()
     });
     if (!response.ok) throw new Error('Failed to fetch posts');
     const data = await response.json();
@@ -81,7 +85,7 @@ export const api = {
   generatePost: async (topic: string): Promise<BlogPost> => {
     const response = await fetch(`${API_URL}/generate-pro-blog`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers: await getHeaders(),
       body: JSON.stringify({ topic }),
     });
     if (!response.ok) throw new Error('Failed to generate post');
@@ -97,7 +101,7 @@ export const api = {
     const backendUpdates = mapPostToBackend(updates);
     const response = await fetch(`${API_URL}/posts/${id}`, {
       method: 'PUT',
-      headers: getHeaders(),
+      headers: await getHeaders(),
       body: JSON.stringify(backendUpdates),
     });
     if (!response.ok) throw new Error('Failed to update post');
@@ -106,7 +110,7 @@ export const api = {
   deletePost: async (id: string): Promise<void> => {
     const response = await fetch(`${API_URL}/posts/${id}`, {
       method: 'DELETE',
-      headers: getHeaders(),
+      headers: await getHeaders(),
     });
     if (!response.ok) throw new Error('Failed to delete post');
   },
@@ -114,24 +118,15 @@ export const api = {
   publishToDevTo: async (id: string): Promise<{ url: string }> => {
     const response = await fetch(`${API_URL}/posts/${id}/publish`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers: await getHeaders(),
     });
     if (!response.ok) throw new Error('Failed to publish to Dev.to');
     return await response.json();
   },
 
-  publishToHashnode: async (id: string): Promise<{ url: string }> => {
-    const response = await fetch(`${API_URL}/posts/${id}/publish/hashnode`, {
-      method: 'POST',
-      headers: getHeaders(),
-    });
-    if (!response.ok) throw new Error('Failed to publish to Hashnode');
-    return await response.json();
-  },
-
   getAnalytics: async (): Promise<any> => {
     const response = await fetch(`${API_URL}/analytics`, {
-      headers: getHeaders()
+      headers: await getHeaders()
     });
     if (!response.ok) throw new Error('Failed to fetch analytics');
     return await response.json();
@@ -139,7 +134,7 @@ export const api = {
 
   getSettings: async (): Promise<any> => {
     const response = await fetch(`${API_URL}/user/settings`, {
-      headers: getHeaders()
+      headers: await getHeaders()
     });
     if (!response.ok) throw new Error('Failed to fetch settings');
     return await response.json();
@@ -148,10 +143,7 @@ export const api = {
   updateSettings: async (settings: any): Promise<void> => {
     const response = await fetch(`${API_URL}/user/settings`, {
       method: 'PUT',
-      headers: {
-        ...getHeaders(),
-        'Content-Type': 'application/json'
-      },
+      headers: await getHeaders(),
       body: JSON.stringify(settings)
     });
     if (!response.ok) throw new Error('Failed to update settings');

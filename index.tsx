@@ -12,6 +12,8 @@ if (!rootElement) {
 
 // Replace with your actual Google Client ID
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
+console.log("Google Client ID:", GOOGLE_CLIENT_ID);
+
 
 const root = ReactDOM.createRoot(rootElement);
 root.render(
