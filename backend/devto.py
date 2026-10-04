@@ -1,4 +1,5 @@
 import requests
+from datetime import datetime, timedelta, timezone
 
 DEVTO_ARTICLES_URL = "https://dev.to/api/articles"
 
@@ -47,6 +48,20 @@ def publish_article(api_key: str, title: str, body_markdown: str, tags, publishe
         print(f"❌ Dev.to Error ({response.status_code}): {response.text}")
         raise RuntimeError(f"Dev.to Error ({response.status_code}): {response.text}")
     return response.json()["url"]
+
+
+def published_within(api_key: str, hours: float) -> bool:
+    """True if the account published an article in the last `hours` hours."""
+    response = requests.get(
+        "https://dev.to/api/articles/me/published", params={"per_page": 5},
+        headers={"api-key": api_key}, timeout=15,
+    )
+    response.raise_for_status()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return any(
+        a.get("published_at") and datetime.fromisoformat(a["published_at"].replace("Z", "+00:00")) > cutoff
+        for a in response.json()
+    )
 
 
 def recent_titles(api_key: str, limit: int = 30) -> list:

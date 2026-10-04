@@ -7,6 +7,7 @@ Scheduled by .github/workflows/autopilot.yml at 06:00 and 18:00 IST.
 Usage:
     python backend/autopilot.py            # pick, generate, publish
     python backend/autopilot.py --dry-run  # pick and generate only, nothing is published or saved
+    python backend/autopilot.py --skip-if-posted-within 3  # do nothing if a post went out in the last 3 hours
 
 Environment:
     GROQ_API_KEY              required
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from main import db, build_post_data
 from agents import app_graph, ask_llm
-from devto import publish_article, recent_titles
+from devto import publish_article, recent_titles, published_within
 
 
 class TopicPick(BaseModel):
@@ -104,11 +105,19 @@ def write_summary(lines: List[str]):
 def main():
     parser = argparse.ArgumentParser(description="TrendFlow autopilot")
     parser.add_argument("--dry-run", action="store_true", help="Generate the post but don't publish or save it")
+    parser.add_argument("--skip-if-posted-within", type=float, metavar="HOURS",
+                        help="Exit without posting if the account already published within this many hours "
+                             "(lets backup schedule triggers run safely)")
     args = parser.parse_args()
 
     devto_key = os.getenv("DEVTO_API_KEY")
     if not devto_key and not args.dry_run:
         sys.exit("DEVTO_API_KEY is required to publish (use --dry-run to test without it)")
+
+    if args.skip_if_posted_within and devto_key and not args.dry_run:
+        if published_within(devto_key, args.skip_if_posted_within):
+            write_summary([f"## TrendFlow Autopilot", f"- Skipped: already published within the last {args.skip_if_posted_within:g} hours"])
+            return
 
     print("--- 🛰️ Autopilot: Finding the most interesting topic ---")
     candidates = trending_candidates()
