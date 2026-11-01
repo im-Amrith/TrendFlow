@@ -57,9 +57,9 @@ def _find_existing(api_key: str, title: str):
 def publish_article(api_key: str, title: str, body_markdown: str, tags, published: bool = True) -> str:
     """Creates a Dev.to article and returns its URL. Raises RuntimeError on failure.
 
-    Rate limits (429) and server errors (5xx) are retried with backoff. Before each retry it checks
-    whether the failed request actually created the article. The last retry is sent without the
-    series field, which is the only optional part of the payload."""
+    Each article stands alone (no Dev.to series). Rate limits (429) and server errors (5xx) are
+    retried with backoff, and before each retry it checks whether the failed request actually
+    created the article."""
     if not body_markdown.strip():
         raise RuntimeError("Post has no content to publish")
 
@@ -68,7 +68,6 @@ def publish_article(api_key: str, title: str, body_markdown: str, tags, publishe
         "body_markdown": body_markdown,
         "published": published,
         "tags": clean_tags(tags),
-        "series": "TrendFlow AI Digest",
     }
     headers = {"api-key": api_key, "Content-Type": "application/json", "User-Agent": USER_AGENT}
 
@@ -97,9 +96,6 @@ def publish_article(api_key: str, title: str, body_markdown: str, tags, publishe
         if existing:
             print(f"   ✅ The earlier request did create the article: {existing}")
             return existing
-        if attempt == len(RETRY_WAITS) - 1:
-            article.pop("series", None)
-            print("   ↪️ Last attempt: sending without the series field")
 
     raise RuntimeError(last_error)
 
