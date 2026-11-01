@@ -2,7 +2,7 @@
 Autopilot: picks the most interesting AI/tech topic right now, writes a post with the agent graph
 and publishes it to Dev.to.
 
-Scheduled by .github/workflows/autopilot.yml at 06:00 and 18:00 IST.
+Scheduled by .github/workflows/autopilot.yml once a day at 18:00 IST.
 
 Usage:
     python backend/autopilot.py            # pick, generate, publish
@@ -107,7 +107,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Generate the post but don't publish or save it")
     parser.add_argument("--skip-if-posted-within", type=float, metavar="HOURS",
                         help="Exit without posting if the account already published within this many hours "
-                             "(lets backup schedule triggers run safely)")
+                             "(stops a late scheduled run from double-posting after a manual one)")
     args = parser.parse_args()
 
     devto_key = os.getenv("DEVTO_API_KEY")
@@ -141,11 +141,23 @@ def main():
         f"- **Words:** {len(body.split())}",
     ]
 
+    # Keep a copy of the generated post so a failed publish doesn't lose it.
+    # The workflow uploads this folder as a run artifact.
+    out_dir = os.getenv("AUTOPILOT_OUTPUT_DIR", "autopilot_output")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "post.md"), "w", encoding="utf-8") as f:
+        f.write(f"# {title}\n\nTags: {', '.join(tags)}\n\n---\n\n{body}\n")
+
     if args.dry_run:
         write_summary(summary + ["- **Dry run:** not published", "", "---", "", body[:3000]])
         return
 
-    url = publish_article(devto_key, title, body, tags, published=True)
+    try:
+        url = publish_article(devto_key, title, body, tags, published=True)
+    except RuntimeError as e:
+        write_summary(summary + [f"- ❌ **Publish failed:** {e}",
+                                 "- The generated post is saved in this run's `autopilot-post` artifact."])
+        sys.exit(1)
     summary.append(f"- **Published:** {url}")
 
     owner = os.getenv("AUTOPILOT_USER_ID")

@@ -1,16 +1,10 @@
-name: Autopilot (6 AM & 6 PM IST)
+name: Autopilot (6 PM IST)
 
 on:
   schedule:
-    # GitHub cron runs in UTC (IST = UTC+5:30). Scheduled runs are best-effort: GitHub can delay
-    # or drop them, so each slot has two backups. Only the first run that fires posts; later ones
-    # skip because something was published within the last 4 hours.
-    - cron: "30 0 * * *"   # 06:00 IST
-    - cron: "5 1 * * *"    # 06:35 IST backup
-    - cron: "35 1 * * *"   # 07:05 IST backup
-    - cron: "30 12 * * *"  # 18:00 IST
-    - cron: "5 13 * * *"   # 18:35 IST backup
-    - cron: "35 13 * * *"  # 19:05 IST backup
+    # Once a day at 18:00 IST. GitHub cron runs in UTC (IST = UTC+5:30), so 12:30 UTC.
+    # Scheduled runs are best-effort: GitHub can start them late, and occasionally skips one.
+    - cron: "30 12 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -52,5 +46,14 @@ jobs:
           GUARDIAN_API_KEY: ${{ secrets.GUARDIAN_API_KEY }}
         run: >-
           python backend/autopilot.py
-          ${{ github.event_name == 'schedule' && '--skip-if-posted-within 4' || '' }}
+          ${{ github.event_name == 'schedule' && '--skip-if-posted-within 12' || '' }}
           ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '--dry-run' || '' }}
+
+      - name: Save generated post
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopilot-post
+          path: autopilot_output/
+          if-no-files-found: ignore
+          retention-days: 14

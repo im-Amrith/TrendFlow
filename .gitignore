@@ -30,3 +30,4 @@ hf_deploy/
 
 # Firebase service-account key (never commit)
 firebase-key.json
+autopilot_output/
